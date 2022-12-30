@@ -4,11 +4,55 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"io/fs"
+	"io/ioutil"
+	"log"
 	"os"
 	"strconv"
 	"strings"
 	"syscall"
 )
+
+type FileInfo struct {
+	fileName string
+	fd       int64
+	mode     fs.FileMode
+}
+
+func getFDList(fileName string) ([]*FileInfo, error) {
+	files, err := ioutil.ReadDir(fileName)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	var fileList []*FileInfo
+	for _, file := range files {
+		info, err := os.Lstat(fmt.Sprintf("%s/%s", fileName, file.Name()))
+		if err != nil {
+			return nil, err
+		}
+		if info.Mode()&os.ModeSymlink == os.ModeSymlink {
+			realPath, _ := os.Readlink(fmt.Sprintf("%s/%s", fileName, file.Name()))
+			if realPath[0:1] == "/" {
+				i, err := strconv.Atoi(file.Name())
+				if err != nil {
+					return nil, err
+				}
+				fi := &FileInfo{
+					fileName: realPath,
+					fd:       int64(i),
+					mode:     file.Mode(),
+				}
+				fileList = append(fileList, fi)
+			}
+
+		} else {
+			continue
+		}
+	}
+
+	return fileList, nil
+}
 
 func readFDInfo(fileName string) []byte {
 	fp, err := os.Open(fileName)
@@ -121,10 +165,23 @@ func checkFlags(hex int64) []string {
 }
 
 func main() {
-	procFile := fmt.Sprintf("/proc/%s/fdinfo/%s", os.Args[1], os.Args[2])
-	flags := strings.TrimSpace(strings.Split(string(readFDInfo(procFile)), ":")[1])
-	hex, _ := strconv.ParseInt(flags, 8, 64)
-	fs := checkFlags(hex)
+	if len(os.Args) < 1 {
+		fmt.Println("please pid")
+		os.Exit(1)
+	}
 
-	fmt.Println(fs)
+	fds, err := getFDList(fmt.Sprintf("/proc/%s/fd", os.Args[1]))
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+	for _, fd := range fds {
+		procFile := fmt.Sprintf("/proc/%s/fdinfo/%d", os.Args[1], fd.fd)
+		flags := strings.TrimSpace(strings.Split(string(readFDInfo(procFile)), ":")[1])
+		hex, _ := strconv.ParseInt(flags, 8, 64)
+		fs := checkFlags(hex)
+
+		fmt.Printf("%s: %v\n", fd.fileName, fs)
+	}
+
 }
